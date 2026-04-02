@@ -20,7 +20,6 @@ namespace custom {
         }
 
         void update(int mX, int mY, bool lDown) override {
-            // Update self
             isHovered = (mX >= bounds.x && mX <= bounds.x + bounds.w &&
                          mY >= bounds.y && mY <= bounds.y + bounds.h);
 

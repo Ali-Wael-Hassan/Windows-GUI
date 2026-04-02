@@ -2,21 +2,41 @@
 #include <Windows.h>
 #include <string>
 #include <mutex>
+#include "core/Color.h"
 
 namespace custom {
+
     class Graphic {
     public:
         static Graphic& getInstance();
+        
         void setTarget(HWND hwnd) { m_hwnd = hwnd; }
 
-        void clear(COLORREF color);
-        
-        void draw_rect(int x, int y, int width, int height, COLORREF color, 
-                       int radius = 0, int glowSize = 0, COLORREF glowColor = RGB(255, 255, 255));
-        
-        void draw_circle(int x, int y, int radius, COLORREF color, bool fill = true);
-        void draw_line(int x1, int y1, int x2, int y2, int thickness, COLORREF color);
-        void draw_text(int x, int y, const std::string &text, COLORREF color);
+        void clear(Color color);
+
+        void draw_rect(int x, int y, int width, int height, 
+                       const Paint& paint, 
+                       int radius = 0, 
+                       int glowSize = 0, 
+                       const Paint& glowPaint = Color(255, 255, 255));
+
+        void draw_circle(int x, int y, int radius, 
+                         const Paint& paint, 
+                         int glowSize = 0, 
+                         const Paint& glowPaint = Color(255, 255, 255), 
+                         bool fill = true);
+
+        void draw_line(int x1, int y1, int x2, int y2, 
+                       int thickness, 
+                       const Paint& paint, 
+                       int glowSize = 0, 
+                       const Paint& glowPaint = Color(255, 255, 255));
+
+        void draw_text(int x, int y, 
+                       const std::string& text, 
+                       Color color, 
+                       int glowSize = 0, 
+                       Color glowColor = Color(255, 255, 255));
 
     private:
         Graphic() = default;
