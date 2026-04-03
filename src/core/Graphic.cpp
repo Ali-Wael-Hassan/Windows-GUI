@@ -1,155 +1,338 @@
 #include "core/Graphic.h"
+#include <algorithm>
 
 namespace custom {
+
+    Graphic::Graphic() 
+        : m_commandCount(0), m_arenaOffset(0), 
+          m_brushCacheCount(0), m_penCacheCount(0),
+          m_width(0), m_height(0) 
+    {
+        memset(m_brushCache, 0, sizeof(m_brushCache));
+        memset(m_penCache, 0, sizeof(m_penCache));
+    }
 
     Graphic& Graphic::getInstance() {
         static Graphic instance;
         return instance;
     }
 
-    void Graphic::clear(Color color) {
-        if (!m_hwnd) return;
-        std::lock_guard<std::mutex> lock(m_gfxMutex);
-        HDC hdc = GetDC(m_hwnd);
-        RECT rect;
-        GetClientRect(m_hwnd, &rect);
-        HBRUSH brush = CreateSolidBrush(color.toNative());
-        FillRect(hdc, &rect, brush);
-        DeleteObject(brush);
-        ReleaseDC(m_hwnd, hdc);
+    Graphic::~Graphic() {
+        clearCache();
+        if (m_memDC) {
+            SelectObject(m_memDC, m_oldBitmap);
+            DeleteObject(m_memBitmap);
+            DeleteDC(m_memDC);
+        }
     }
 
-    void Graphic::draw_rect(int x, int y, int width, int height, const Paint& paint, int radius, int glowSize, const Paint& glowPaint) {
+    void Graphic::beginFrame() {
+        m_commandCount = 0;
+        m_arenaOffset = 0;
+
+        if (m_memDC && m_lastDirtyRect.left < m_lastDirtyRect.right) {
+            int lx = m_lastDirtyRect.left;
+            int ly = m_lastDirtyRect.top;
+            int lw = m_lastDirtyRect.right - m_lastDirtyRect.left;
+            int lh = m_lastDirtyRect.bottom - m_lastDirtyRect.top;
+
+            HBRUSH bgBrush = getCachedBrush(m_bgPaint.color1.toNative());
+            RECT r = { lx, ly, lx + lw, ly + lh };
+            FillRect(m_memDC, &r, bgBrush);
+        }
+
+        m_dirtyRect.left = 32767; 
+        m_dirtyRect.top = 32767;
+        m_dirtyRect.right = -32767;
+        m_dirtyRect.bottom = -32767;
+
         if (!m_hwnd) return;
-        std::lock_guard<std::mutex> lock(m_gfxMutex);
-        HDC hdc = GetDC(m_hwnd);
 
-        if (glowSize > 0) {
-            HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-            for (int i = 1; i <= glowSize; ++i) {
-                Color currentGlow = glowPaint.color1;
-                if (glowPaint.isGradient) {
-                    float factor = (float)i / (float)glowSize;
-                    currentGlow.r = (unsigned char)(glowPaint.color1.r + (glowPaint.color2.r - glowPaint.color1.r) * factor);
-                    currentGlow.g = (unsigned char)(glowPaint.color1.g + (glowPaint.color2.g - glowPaint.color1.g) * factor);
-                    currentGlow.b = (unsigned char)(glowPaint.color1.b + (glowPaint.color2.b - glowPaint.color1.b) * factor);
-                }
-                HPEN glowPen = CreatePen(PS_SOLID, 1, currentGlow.toNative());
-                HGDIOBJ oldPen = SelectObject(hdc, glowPen);
-                RoundRect(hdc, x - i, y - i, x + width + i, y + height + i, radius + (i * 2), radius + (i * 2));
-                SelectObject(hdc, oldPen);
-                DeleteObject(glowPen);
-            }
-            SelectObject(hdc, oldBrush);
-        }
+        RECT r; GetClientRect(m_hwnd, &r);
+        int w = r.right - r.left, h = r.bottom - r.top;
 
-        if (paint.isGradient) {
-            TRIVERTEX v[2];
-            v[0] = { x, y, (COLOR16)(paint.color1.r << 8), (COLOR16)(paint.color1.g << 8), (COLOR16)(paint.color1.b << 8), 0 };
-            v[1] = { x + width, y + height, (COLOR16)(paint.color2.r << 8), (COLOR16)(paint.color2.g << 8), (COLOR16)(paint.color2.b << 8), 0 };
-            GRADIENT_RECT gRect = { 0, 1 };
-            GradientFill(hdc, v, 2, &gRect, 1, paint.isVertical ? GRADIENT_FILL_RECT_V : GRADIENT_FILL_RECT_H);
-        } else {
-            HBRUSH brush = CreateSolidBrush(paint.color1.toNative());
-            HPEN pen = CreatePen(PS_SOLID, 1, paint.color1.toNative());
-            SelectObject(hdc, brush);
-            SelectObject(hdc, pen);
-            if (radius > 0) RoundRect(hdc, x, y, x + width, y + height, radius, radius);
-            else {
-                RECT r = { x, y, x + width, y + height };
-                FillRect(hdc, &r, brush);
+        if (!m_memDC || w != m_width || h != m_height) {
+            if (m_memDC) { 
+                SelectObject(m_memDC, m_oldBitmap); 
+                DeleteObject(m_memBitmap); 
+                DeleteDC(m_memDC); 
             }
-            DeleteObject(brush);
-            DeleteObject(pen);
+            HDC hdc = GetDC(m_hwnd);
+            m_width = w; m_height = h;
+            m_memDC = CreateCompatibleDC(hdc);
+            m_memBitmap = CreateCompatibleBitmap(hdc, w, h);
+            m_oldBitmap = (HBITMAP)SelectObject(m_memDC, m_memBitmap);
+            ReleaseDC(m_hwnd, hdc);
+            clear(m_bgPaint);
         }
-        ReleaseDC(m_hwnd, hdc);
     }
 
-    void Graphic::draw_circle(int x, int y, int radius, const Paint& paint, int glowSize, const Paint& glowPaint, bool fill) {
-        if (!m_hwnd) return;
-        std::lock_guard<std::mutex> lock(m_gfxMutex);
-        HDC hdc = GetDC(m_hwnd);
+    void Graphic::addDirtyRect(int x, int y, int w, int h) {
+        m_dirtyRect.left   = (std::min)((long)m_dirtyRect.left, (long)x - 2);
+        m_dirtyRect.top    = (std::min)((long)m_dirtyRect.top, (long)y - 2);
+        m_dirtyRect.right  = (std::max)((long)m_dirtyRect.right, (long)x + w + 2);
+        m_dirtyRect.bottom = (std::max)((long)m_dirtyRect.bottom, (long)y + h + 2);
+    }
 
-        if (glowSize > 0) {
-            HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-            for (int i = 1; i <= glowSize; ++i) {
-                Color currentGlow = glowPaint.color1;
-                if (glowPaint.isGradient) {
-                    float factor = (float)i / (float)glowSize;
-                    currentGlow.r = (unsigned char)(glowPaint.color1.r + (glowPaint.color2.r - glowPaint.color1.r) * factor);
-                    currentGlow.g = (unsigned char)(glowPaint.color1.g + (glowPaint.color2.g - glowPaint.color1.g) * factor);
-                    currentGlow.b = (unsigned char)(glowPaint.color1.b + (glowPaint.color2.b - glowPaint.color1.b) * factor);
-                }
-                HPEN glowPen = CreatePen(PS_SOLID, 1, currentGlow.toNative());
-                HGDIOBJ oldPen = SelectObject(hdc, glowPen);
-                Ellipse(hdc, x - radius - i, y - radius - i, x + radius + i, y + radius + i);
-                SelectObject(hdc, oldPen);
-                DeleteObject(glowPen);
+    void Graphic::endFrame() {
+        if (!m_memDC || m_commandCount == 0) return;
+
+        int combinedLeft = (std::min)((int)m_dirtyRect.left, (int)m_lastDirtyRect.left);
+        int combinedTop  = (std::min)((int)m_dirtyRect.top, (int)m_lastDirtyRect.top);
+        int combinedRight = (std::max)((int)m_dirtyRect.right, (int)m_lastDirtyRect.right);
+        int combinedBottom = (std::max)((int)m_dirtyRect.bottom, (int)m_lastDirtyRect.bottom);
+
+        int dx = (std::max)(0, combinedLeft);
+        int dy = (std::max)(0, combinedTop);
+        int dw = (std::min)(m_width - dx, combinedRight - combinedLeft);
+        int dh = (std::min)(m_height - dy, combinedBottom - combinedTop);
+
+        if (dw > 0 && dh > 0) {
+            for (size_t i = 0; i < m_commandCount; ++i) {
+                m_commands[i].execute(m_memDC);
             }
-            SelectObject(hdc, oldBrush);
+
+            HDC hdc = GetDC(m_hwnd);
+            BitBlt(hdc, dx, dy, dw, dh, m_memDC, dx, dy, SRCCOPY);
+            ReleaseDC(m_hwnd, hdc);
         }
 
-        HBRUSH brush = fill ? CreateSolidBrush(paint.color1.toNative()) : (HBRUSH)GetStockObject(NULL_BRUSH);
-        HPEN pen = CreatePen(PS_SOLID, 1, paint.color1.toNative());
-        SelectObject(hdc, brush);
-        SelectObject(hdc, pen);
-        Ellipse(hdc, x - radius, y - radius, x + radius, y + radius);
+        m_lastDirtyRect = m_dirtyRect;
+    }
+
+    void Graphic::clear(const Paint& paint) {
+        if (m_commandCount >= MAX_COMMANDS) return;
+
+        addDirtyRect(0, 0, m_width, m_height);
+
+        RenderCommand& cmd = m_commands[m_commandCount++];
+        cmd.type = (uint8_t)CommandType::Rect;
+        cmd.x = 0; cmd.y = 0; 
+        cmd.w = (int16_t)m_width; 
+        cmd.h = (int16_t)m_height;
         
-        if (fill) DeleteObject(brush);
-        DeleteObject(pen);
-        ReleaseDC(m_hwnd, hdc);
+        cmd.paint = paint;
+        cmd.isGradient = paint.isGradient;
+        cmd.isVertical = paint.isVertical;
+        cmd.hBrush = getCachedBrush(paint.color1.toNative());
+
+        cmd.renderer = [](HDC hdc, const RenderCommand& c) {
+            if (c.isGradient) {
+                TRIVERTEX v[2] = { 
+                    { c.x, c.y, (COLOR16)(c.paint.color1.r << 8), (COLOR16)(c.paint.color1.g << 8), (COLOR16)(c.paint.color1.b << 8), 0 },
+                    { (int16_t)(c.x + c.w), (int16_t)(c.y + c.h), (COLOR16)(c.paint.color2.r << 8), (COLOR16)(c.paint.color2.g << 8), (COLOR16)(c.paint.color2.b << 8), 0 }
+                };
+                GRADIENT_RECT g = {0, 1};
+                GradientFill(hdc, v, 2, &g, 1, c.isVertical ? GRADIENT_FILL_RECT_V : GRADIENT_FILL_RECT_H);
+            } else {
+                RECT r = { c.x, c.y, c.x + c.w, c.y + c.h };
+                FillRect(hdc, &r, c.hBrush);
+            }
+        };
     }
 
-    void Graphic::draw_line(int x1, int y1, int x2, int y2, int thickness, const Paint& paint, int glowSize, const Paint& glowPaint) {
-        if (!m_hwnd) return;
-        std::lock_guard<std::mutex> lock(m_gfxMutex);
-        HDC hdc = GetDC(m_hwnd);
+    void Graphic::draw_rect(int x, int y, int w, int h, const Paint& paint, int radius) {
+        if (m_commandCount >= MAX_COMMANDS) return;
+        RenderCommand& cmd = m_commands[m_commandCount++];
+        addDirtyRect(x, y, w, h);
+        
+        cmd.type = (uint8_t)CommandType::Rect;
+        cmd.x = (int16_t)x; cmd.y = (int16_t)y; cmd.w = (int16_t)w; cmd.h = (int16_t)h;
+        cmd.paint = paint;
+        cmd.isGradient = paint.isGradient;
+        cmd.isVertical = paint.isVertical;
+        cmd.hBrush = getCachedBrush(paint.color1.toNative());
 
-        if (glowSize > 0) {
-            for (int i = 1; i <= glowSize; ++i) {
-                Color currentGlow = glowPaint.color1;
-                if (glowPaint.isGradient) {
-                    float factor = (float)i / (float)glowSize;
-                    currentGlow.r = (unsigned char)(glowPaint.color1.r + (glowPaint.color2.r - glowPaint.color1.r) * factor);
-                    currentGlow.g = (unsigned char)(glowPaint.color1.g + (glowPaint.color2.g - glowPaint.color1.g) * factor);
-                    currentGlow.b = (unsigned char)(glowPaint.color1.b + (glowPaint.color2.b - glowPaint.color1.b) * factor);
+        struct RectData { int radius; };
+        cmd.data = allocateData(RectData{ radius });
+
+        cmd.renderer = [](HDC hdc, const RenderCommand& c) {
+            auto* d = (RectData*)c.data;
+            if (d->radius > 0) {
+                HRGN rgn = CreateRoundRectRgn(c.x, c.y, c.x + c.w + 1, c.y + c.h + 1, d->radius, d->radius);
+                SelectClipRgn(hdc, rgn);
+                if (c.isGradient) {
+                    TRIVERTEX v[2] = { 
+                        { c.x, c.y, (COLOR16)(c.paint.color1.r << 8), (COLOR16)(c.paint.color1.g << 8), (COLOR16)(c.paint.color1.b << 8), 0 },
+                        { (int16_t)(c.x + c.w), (int16_t)(c.y + c.h), (COLOR16)(c.paint.color2.r << 8), (COLOR16)(c.paint.color2.g << 8), (COLOR16)(c.paint.color2.b << 8), 0 }
+                    };
+                    GRADIENT_RECT g = {0, 1};
+                    GradientFill(hdc, v, 2, &g, 1, c.isVertical ? GRADIENT_FILL_RECT_V : GRADIENT_FILL_RECT_H);
+                } else {
+                    RECT r = { c.x, c.y, c.x + c.w, c.y + c.h };
+                    FillRect(hdc, &r, c.hBrush);
                 }
-                HPEN glowPen = CreatePen(PS_SOLID, thickness + (i * 2), currentGlow.toNative());
-                HGDIOBJ oldPen = SelectObject(hdc, glowPen);
-                MoveToEx(hdc, x1, y1, NULL);
-                LineTo(hdc, x2, y2);
-                SelectObject(hdc, oldPen);
-                DeleteObject(glowPen);
+                SelectClipRgn(hdc, NULL); DeleteObject(rgn);
+            } else {
+                RECT r = { c.x, c.y, c.x + c.w, c.y + c.h };
+                FillRect(hdc, &r, c.hBrush);
             }
-        }
-
-        HPEN pen = CreatePen(PS_SOLID, thickness, paint.color1.toNative());
-        SelectObject(hdc, pen);
-        MoveToEx(hdc, x1, y1, NULL);
-        LineTo(hdc, x2, y2);
-        DeleteObject(pen);
-        ReleaseDC(m_hwnd, hdc);
+        };
     }
 
-    // --- TEXT ---
-    void Graphic::draw_text(int x, int y, const std::string& text, Color color, int glowSize, Color glowColor) {
-        if (!m_hwnd) return;
-        std::lock_guard<std::mutex> lock(m_gfxMutex);
-        HDC hdc = GetDC(m_hwnd);
-        SetBkMode(hdc, TRANSPARENT);
+    void Graphic::draw_ellipse(int x, int y, int w, int h, const Paint& paint, bool fill) {
+        if (m_commandCount >= MAX_COMMANDS) return;
+        RenderCommand& cmd = m_commands[m_commandCount++];
+        addDirtyRect(x, y, w, h);
 
-        if (glowSize > 0) {
-            SetTextColor(hdc, glowColor.toNative());
-            for (int i = 1; i <= glowSize; ++i) {
-                TextOutA(hdc, x - i, y, text.c_str(), (int)text.length());
-                TextOutA(hdc, x + i, y, text.c_str(), (int)text.length());
-                TextOutA(hdc, x, y - i, text.c_str(), (int)text.length());
-                TextOutA(hdc, x, y + i, text.c_str(), (int)text.length());
+        cmd.type = (uint8_t)CommandType::Circle;
+        cmd.x = (int16_t)x; cmd.y = (int16_t)y; cmd.w = (int16_t)w; cmd.h = (int16_t)h;
+        cmd.paint = paint;
+        cmd.fill = fill;
+        cmd.isGradient = paint.isGradient;
+        cmd.isVertical = paint.isVertical;
+        cmd.hBrush = getCachedBrush(paint.color1.toNative());
+        cmd.hPen = getCachedPen(paint.color1.toNative(), 1);
+
+        cmd.renderer = [](HDC hdc, const RenderCommand& c) {
+            if (c.fill) {
+                if (c.isGradient) {
+                    HRGN rgn = CreateEllipticRgn(c.x, c.y, c.x + c.w + 1, c.y + c.h + 1);
+                    SelectClipRgn(hdc, rgn);
+
+                    TRIVERTEX v[2] = {
+                        { c.x, c.y, (COLOR16)(c.paint.color1.r << 8), (COLOR16)(c.paint.color1.g << 8), (COLOR16)(c.paint.color1.b << 8), 0 },
+                        { (int16_t)(c.x + c.w), (int16_t)(c.y + c.h), (COLOR16)(c.paint.color2.r << 8), (COLOR16)(c.paint.color2.g << 8), (COLOR16)(c.paint.color2.b << 8), 0 }
+                    };
+                    GRADIENT_RECT g = { 0, 1 };
+                    GradientFill(hdc, v, 2, &g, 1, c.isVertical ? GRADIENT_FILL_RECT_V : GRADIENT_FILL_RECT_H);
+
+                    SelectClipRgn(hdc, NULL);
+                    DeleteObject(rgn);
+                } else {
+                    SelectObject(hdc, c.hBrush);
+                    SelectObject(hdc, (HPEN)GetStockObject(NULL_PEN));
+                    Ellipse(hdc, c.x, c.y, c.x + c.w, c.y + c.h);
+                }
+            } else {
+                // Outline only
+                SelectObject(hdc, (HBRUSH)GetStockObject(NULL_BRUSH));
+                SelectObject(hdc, c.hPen);
+                Ellipse(hdc, c.x, c.y, c.x + c.w, c.y + c.h);
+            }
+        };
+    }
+
+    void Graphic::draw_line(int x1, int y1, int x2, int y2, int thickness, const Paint& paint) {
+        if (m_commandCount >= MAX_COMMANDS) return;
+        RenderCommand& cmd = m_commands[m_commandCount++];
+        int x = (std::min)(x1, x2) - thickness;
+        int y = (std::min)(y1, y2) - thickness;
+        int w = std::abs(x1 - x2) + (thickness * 2);
+        int h = std::abs(y1 - y2) + (thickness * 2);
+
+        addDirtyRect(x, y, w, h);
+
+        cmd.type = (uint8_t)CommandType::Line;
+        cmd.x1 = (int16_t)x1; cmd.y1 = (int16_t)y1; 
+        cmd.x2 = (int16_t)x2; cmd.y2 = (int16_t)y2;
+        cmd.paint = paint;
+        cmd.isGradient = paint.isGradient;
+        struct LineData { int thick; };
+        cmd.data = allocateData(LineData{ thickness });
+        cmd.hPen = getCachedPen(paint.color1.toNative(), thickness);
+
+        cmd.renderer = [](HDC hdc, const RenderCommand& c) {
+            if (c.isGradient) {
+                TRIVERTEX v[4];
+                v[0] = { c.x1, c.y1, (COLOR16)(c.paint.color1.r << 8), (COLOR16)(c.paint.color1.g << 8), (COLOR16)(c.paint.color1.b << 8), 0 };
+                v[1] = { c.x2, c.y2, (COLOR16)(c.paint.color2.r << 8), (COLOR16)(c.paint.color2.g << 8), (COLOR16)(c.paint.color2.b << 8), 0 };
+                
+                GRADIENT_TRIANGLE t[1] = { 0, 1, 1 };
+                SelectObject(hdc, c.hPen);
+                MoveToEx(hdc, c.x1, c.y1, NULL);
+                LineTo(hdc, c.x2, c.y2);
+            } else {
+                SelectObject(hdc, c.hPen);
+                MoveToEx(hdc, c.x1, c.y1, NULL);
+                LineTo(hdc, c.x2, c.y2);
+            }
+        };
+    }
+
+    void Graphic::draw_text(int x, int y, const char* text, Color color) {
+        if (m_commandCount >= MAX_COMMANDS) return;
+        RenderCommand& cmd = m_commands[m_commandCount++];
+        addDirtyRect(x, y, 500, 30);
+
+        cmd.type = (uint8_t)CommandType::Text;
+        cmd.x = (int16_t)x; cmd.y = (int16_t)y;
+        cmd.paint.color1 = color;
+        cmd.data = allocateString(text);
+        cmd.renderer = [](HDC hdc, const RenderCommand& c) {
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, c.paint.color1.toNative());
+            TextOutA(hdc, c.x, c.y, (const char*)c.data, (int)strlen((const char*)c.data));
+        };
+    }
+
+    HBRUSH Graphic::getCachedBrush(COLORREF color) {
+        HBRUSH found = nullptr;
+
+        #pragma omp simd
+        for (int i = 0; i < (int)m_brushCacheCount; ++i) {
+            if (m_brushCache[i].color == color) {
+                found = m_brushCache[i].handle;
             }
         }
 
-        SetTextColor(hdc, color.toNative());
-        TextOutA(hdc, x, y, text.c_str(), (int)text.length());
-        ReleaseDC(m_hwnd, hdc);
+        if (found) return found;
+
+        if (m_brushCacheCount < MAX_CACHE) {
+            HBRUSH h = CreateSolidBrush(color);
+            m_brushCache[m_brushCacheCount++] = { color, h };
+            return h;
+        }
+        return (HBRUSH)GetStockObject(WHITE_BRUSH);
+    }
+
+    HPEN Graphic::getCachedPen(COLORREF color, int thickness) {
+        HPEN found = nullptr;
+
+        #pragma omp simd
+        for (int i = 0; i < (int)m_penCacheCount; ++i) {
+            if (m_penCache[i].color == color && m_penCache[i].thickness == thickness) {
+                found = m_penCache[i].handle;
+            }
+        }
+
+        if (found) return found;
+
+        if (m_penCacheCount < MAX_CACHE) {
+            HPEN h = CreatePen(PS_SOLID, thickness, color);
+            m_penCache[m_penCacheCount++] = { color, thickness, h };
+            return h;
+        }
+        return (HPEN)GetStockObject(BLACK_PEN);
+    }
+
+    void Graphic::clearCache() {
+        #pragma omp parallel for
+        for (int i = 0; i < (int)m_brushCacheCount; ++i) {
+            DeleteObject(m_brushCache[i].handle);
+        }
+
+        #pragma omp parallel for
+        for (int i = 0; i < (int)m_penCacheCount; ++i) {
+            DeleteObject(m_penCache[i].handle);
+        }
+
+        m_brushCacheCount = 0;
+        m_penCacheCount = 0;
+    }
+
+    template<typename T> T* Graphic::allocateData(const T& source) {
+        if (m_arenaOffset + sizeof(T) > ARENA_SIZE) return nullptr;
+        T* ptr = (T*)&m_dataArena[m_arenaOffset];
+        *ptr = source; m_arenaOffset += sizeof(T);
+        return ptr;
+    }
+
+    char* Graphic::allocateString(const char* text) {
+        size_t len = strlen(text) + 1;
+        if (m_arenaOffset + len > ARENA_SIZE) return nullptr;
+        char* ptr = (char*)&m_dataArena[m_arenaOffset];
+        memcpy(ptr, text, len); m_arenaOffset += len;
+        return ptr;
     }
 }
