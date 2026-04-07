@@ -4,6 +4,8 @@
 #include <string>
 #include "util/ink.h"
 
+#define LOG(msg) custom::logger::getInstance().log(msg);
+
 namespace custom {
     class logger {
     private:

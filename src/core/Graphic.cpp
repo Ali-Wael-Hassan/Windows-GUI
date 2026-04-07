@@ -4,12 +4,12 @@
 namespace custom {
 
     Graphic::Graphic() 
-        : m_commandCount(0), m_arenaOffset(0), 
-          m_brushCacheCount(0), m_penCacheCount(0),
-          m_width(0), m_height(0) 
+        : m_commandCount(0), m_arenaOffset(0),
+        m_width(0), m_height(0),
+        m_frameCounter(0),
+        m_brushCache(MAX_CACHE * sizeof(HBRUSH)),
+        m_penCache(MAX_CACHE * sizeof(HPEN))
     {
-        memset(m_brushCache, 0, sizeof(m_brushCache));
-        memset(m_penCache, 0, sizeof(m_penCache));
     }
 
     Graphic& Graphic::getInstance() {
@@ -29,6 +29,7 @@ namespace custom {
     void Graphic::beginFrame() {
         m_commandCount = 0;
         m_arenaOffset = 0;
+        m_frameCounter++;
 
         if (m_memDC && m_lastDirtyRect.left < m_lastDirtyRect.right) {
             int lx = m_lastDirtyRect.left;
@@ -267,58 +268,21 @@ namespace custom {
     }
 
     HBRUSH Graphic::getCachedBrush(COLORREF color) {
-        HBRUSH found = nullptr;
-
-        #pragma omp simd
-        for (int i = 0; i < (int)m_brushCacheCount; ++i) {
-            if (m_brushCache[i].color == color) {
-                found = m_brushCache[i].handle;
-            }
-        }
-
-        if (found) return found;
-
-        if (m_brushCacheCount < MAX_CACHE) {
-            HBRUSH h = CreateSolidBrush(color);
-            m_brushCache[m_brushCacheCount++] = { color, h };
-            return h;
-        }
-        return (HBRUSH)GetStockObject(WHITE_BRUSH);
+        return m_brushCache.getOrCreate(color, m_frameCounter, [](COLORREF c) {
+            return CreateSolidBrush(c);
+        });
     }
 
     HPEN Graphic::getCachedPen(COLORREF color, int thickness) {
-        HPEN found = nullptr;
-
-        #pragma omp simd
-        for (int i = 0; i < (int)m_penCacheCount; ++i) {
-            if (m_penCache[i].color == color && m_penCache[i].thickness == thickness) {
-                found = m_penCache[i].handle;
-            }
-        }
-
-        if (found) return found;
-
-        if (m_penCacheCount < MAX_CACHE) {
-            HPEN h = CreatePen(PS_SOLID, thickness, color);
-            m_penCache[m_penCacheCount++] = { color, thickness, h };
-            return h;
-        }
-        return (HPEN)GetStockObject(BLACK_PEN);
+        PenKey key{ color, thickness };
+        return m_penCache.getOrCreate(key, m_frameCounter, [thickness](const PenKey& k) {
+            return CreatePen(PS_SOLID, k.thickness, k.color);
+        });
     }
 
     void Graphic::clearCache() {
-        #pragma omp parallel for
-        for (int i = 0; i < (int)m_brushCacheCount; ++i) {
-            DeleteObject(m_brushCache[i].handle);
-        }
-
-        #pragma omp parallel for
-        for (int i = 0; i < (int)m_penCacheCount; ++i) {
-            DeleteObject(m_penCache[i].handle);
-        }
-
-        m_brushCacheCount = 0;
-        m_penCacheCount = 0;
+        m_brushCache.clear();
+        m_penCache.clear();
     }
 
     template<typename T> T* Graphic::allocateData(const T& source) {

@@ -1,6 +1,9 @@
 #pragma once
 #include <Windows.h>
-#include "RenderCommand.h"
+#include "core/RenderCommand.h"
+#include "core/LinearCache.h"
+#include "core/GlobalCacheAllocator.h"
+#include <utility>
 
 namespace custom {
 
@@ -8,8 +11,14 @@ namespace custom {
     const size_t ARENA_SIZE   = 1024 * 64;
     const size_t MAX_CACHE    = 64;
 
-    struct CachedBrush { COLORREF color; HBRUSH handle; };
-    struct CachedPen   { COLORREF color; int thickness; HPEN handle; };
+    struct PenKey {
+        COLORREF color;
+        int thickness;
+
+        bool operator==(const PenKey& other) const {
+            return color == other.color && thickness == other.thickness;
+        }
+    };
 
     class Graphic {
     public:
@@ -21,7 +30,7 @@ namespace custom {
         void endFrame();
         void setTarget(HWND hwnd) { m_hwnd = hwnd; }
         void clear(const Paint& paint);
-        void setBG(const Paint& paint) { m_bgPaint = paint;}
+        void setBG(const Paint& paint) { m_bgPaint = paint; }
 
         // API - Shapes
         void draw_rect(int x, int y, int w, int h, const Paint& paint, int radius = 0);
@@ -34,8 +43,8 @@ namespace custom {
         HPEN   getCachedPen(COLORREF color, int thickness);
 
     private:
-        // for Singletons
-        Graphic(); 
+        // Singleton
+        Graphic();
         Graphic(const Graphic&) = delete;
         Graphic& operator=(const Graphic&) = delete;
 
@@ -45,8 +54,11 @@ namespace custom {
         char* allocateString(const char* text);
 
         void addDirtyRect(int x, int y, int w, int h);
-        
-        // for updating only certain parts
+
+        // Frame tracking
+        uint8_t m_frameCounter = 0;
+
+        // Dirty regions
         Paint m_bgPaint;
         RECT m_dirtyRect;
         RECT m_lastDirtyRect;
@@ -58,17 +70,16 @@ namespace custom {
         uint8_t alignas(64) m_dataArena[ARENA_SIZE];
         size_t m_arenaOffset = 0;
 
-        // Fast Linear Caches
-        CachedBrush alignas(64) m_brushCache[MAX_CACHE];
-        size_t m_brushCacheCount = 0;
-
-        CachedPen alignas(64) m_penCache[MAX_CACHE];
-        size_t m_penCacheCount = 0;
+        // Fast Linear Caches using global allocator
+        LinearCache<COLORREF, HBRUSH, MAX_CACHE, 120> m_brushCache;
+        LinearCache<PenKey, HPEN, MAX_CACHE, 120>    m_penCache;
 
         // GDI Core
         HWND m_hwnd = NULL;
         HDC m_memDC = NULL;
-        HBITMAP m_memBitmap = NULL, m_oldBitmap = NULL;
-        int m_width = 0, m_height = 0;
+        HBITMAP m_memBitmap = NULL;
+        HBITMAP m_oldBitmap = NULL;
+        int m_width = 0;
+        int m_height = 0;
     };
 }
