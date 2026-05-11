@@ -11,7 +11,7 @@ private:
     size_t offset   = 0;
 
     GlobalCacheAllocator(size_t size) : capacity(size), offset(0) {
-#if defined(_MSC_VER)
+#if defined(_WIN32)
         buffer = reinterpret_cast<uint8_t*>(_aligned_malloc(size, 64));
 #else
         buffer = reinterpret_cast<uint8_t*>(std::aligned_alloc(64, (size + 63) & ~63));
@@ -31,7 +31,7 @@ public:
     GlobalCacheAllocator& operator=(const GlobalCacheAllocator&) = delete;
 
     ~GlobalCacheAllocator() {
-#if defined(_MSC_VER)
+#if defined(_WIN32)
         _aligned_free(buffer);
 #else
         free(buffer);

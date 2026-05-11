@@ -41,7 +41,9 @@ public:
                 f[i] = currentFrame;
                 return v[i];
             }
+        }
 
+        for (uint8_t i = 0; i < m_count; ++i) {
             uint8_t age = currentFrame - f[i];
             if (age >= TTL) {
                 evictIdx = i;

@@ -12,6 +12,7 @@ private:
     std::atomic<int> m_mouseX{ 0 };
     std::atomic<int> m_mouseY{ 0 };
     std::atomic<bool> m_isLeftPressed{ false };
+    std::atomic<bool> m_resized{ false };
 
 public:
     Window(size_t w, size_t h);
@@ -27,6 +28,7 @@ public:
     int getMouseX() const { return m_mouseX.load(); }
     int getMouseY() const { return m_mouseY.load(); }
     bool isLeftPressed() const { return m_isLeftPressed.load(); }
+    bool wasResized() { return m_resized.exchange(false); }
 
     bool process_messages();
     void draw_pixel(int x, int y, COLORREF color);

@@ -29,6 +29,7 @@ LRESULT CALLBACK Window::WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM 
         if (pWindow) {
             pWindow->setWidth(LOWORD(lParam));
             pWindow->setHeight(HIWORD(lParam));
+            pWindow->m_resized = true;
         }
         return 0;
 
@@ -65,8 +66,6 @@ Window::Window(size_t w, size_t h) : m_width(w), m_height(h), m_hInstance(GetMod
         custom::logger::getInstance().log("Window created and linked.");
         #endif
         ShowWindow(m_hwnd, SW_SHOW);
-        
-        SetTimer(m_hwnd, 1, 16, NULL); 
     }
 }
 

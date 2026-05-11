@@ -64,10 +64,10 @@ namespace custom {
         RECT m_lastDirtyRect;
 
         // Memory Buffers
-        RenderCommand alignas(64) m_commands[MAX_COMMANDS];
+        alignas(64) RenderCommand m_commands[MAX_COMMANDS];
         size_t m_commandCount = 0;
 
-        uint8_t alignas(64) m_dataArena[ARENA_SIZE];
+        alignas(64) uint8_t m_dataArena[ARENA_SIZE];
         size_t m_arenaOffset = 0;
 
         // Fast Linear Caches using global allocator

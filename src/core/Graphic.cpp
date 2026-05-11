@@ -3,12 +3,15 @@
 
 namespace custom {
 
-    Graphic::Graphic() 
+    static void deleteBrush(HBRUSH b) { DeleteObject(b); }
+    static void deletePen(HPEN p) { DeleteObject(p); }
+
+    Graphic::Graphic()
         : m_commandCount(0), m_arenaOffset(0),
         m_width(0), m_height(0),
         m_frameCounter(0),
-        m_brushCache(MAX_CACHE * sizeof(HBRUSH)),
-        m_penCache(MAX_CACHE * sizeof(HPEN))
+        m_brushCache(MAX_CACHE * (sizeof(COLORREF) + sizeof(HBRUSH) + 1), deleteBrush),
+        m_penCache(MAX_CACHE * (sizeof(PenKey) + sizeof(HPEN) + 1), deletePen)
     {
     }
 
